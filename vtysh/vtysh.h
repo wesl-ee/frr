@@ -21,6 +21,8 @@
 #ifndef VTYSH_H
 #define VTYSH_H
 
+#include <typesafe.h>
+#include <string.h>
 #include "memory.h"
 DECLARE_MGROUP(MVTYSH);
 
@@ -68,6 +70,17 @@ enum vtysh_write_integrated {
 	WRITE_INTEGRATED_YES
 };
 
+/*
+ * List which masks certain commands from being forwarded to certain clients
+ */
+PREDECL_LIST(selective_forward_list);
+typedef struct selective_forward {
+	int clients;
+	const char *command;
+	struct selective_forward_list_item item;
+} selective_forward_t;
+DECLARE_LIST(selective_forward_list, selective_forward_t, item);
+
 extern enum vtysh_write_integrated vtysh_write_integrated;
 
 extern char frr_config[];
@@ -79,6 +92,62 @@ void vtysh_init_cmd(void);
 extern int vtysh_connect_all(const char *optional_daemon_name);
 void vtysh_readline_init(void);
 void vtysh_user_init(void);
+
+/*
+ * Find a rule in the list of known selective forwarding rules
+ *
+ * command
+ *     vtysh command to search for over the known rules
+ *
+ * Returns
+ *     Reference to the matching entry in the list of rules
+ */
+selective_forward_t *vtysh_find_existing_selective_forward(const char *command);
+
+/*
+ * Check which clients care about a command. This is configured with
+ * `COMMAND only-send-to <DAEMON>`
+ *
+ * Returns
+ *     Bitmask of clients that should be forwarded command
+ */
+int vtysh_which_clients_want(const char *command);
+
+/*
+ * Add a client to the bitmask of clients that care about the command
+ *
+ * idx_client
+ *     ID of the client to add to bitmask
+ *
+ * command
+ *     Command which is to be selectively forwarded to client
+ *
+ * Returns
+ *     Bitmask indicating which clients want to be forwarded this command
+ */
+int vtysh_set_filter_daemon_command(int idx_client, const char *command);
+
+/*
+ * Remove a client from the bitmask of clients that care about the command
+ *
+ * idx_client
+ *     ID of the client to remove from bitmask
+ *
+ * command
+ *     Command which is to not be selectively forwarded to client
+ *
+ * Returns
+ *     Bitmask indicating which clients want to be forwarded this command
+ */
+int vtysh_unset_filter_daemon_command(int idx_client, const char *cmd);
+
+/*
+ * Forget a rule for selective forwarding to daemons
+ *
+ * command
+ *     Command to forget selective forwarding for
+ */
+void vtysh_clear_filter_daemon_command(const char *command);
 
 int vtysh_execute(const char *);
 int vtysh_execute_no_pager(const char *);
