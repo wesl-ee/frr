@@ -48,7 +48,10 @@
 #include "json.h"
 #include "ferr.h"
 
+DEFINE_MGROUP(MVTYSH, "vtysh");
 DEFINE_MTYPE_STATIC(MVTYSH, VTYSH_CMD, "Vtysh cmd copy");
+DEFINE_MTYPE_STATIC(MVTYSH, VTYSH_SELECTIVE,
+		    "Vtysh selectively-forwarded commands");
 
 /* Struct VTY. */
 struct vty *vty;
@@ -67,6 +70,9 @@ struct vtysh_client {
 	char path[MAXPATHLEN];
 	struct vtysh_client *next;
 };
+
+/* Tracking if some commands should not be sent to all daemons */
+struct selective_forward_list_head vtysh_selective_forward_list;
 
 /* Some utility functions for working on vtysh-specific vty tasks */
 
@@ -3384,6 +3390,119 @@ static bool want_config_integrated(void)
 	return true;
 }
 
+int vtysh_which_clients_want(selective_forward_command_t command)
+{
+	selective_forward_t *c = vtysh_find_existing_selective_forward(command);
+	if (!c)
+		return VTYSH_ALL;
+
+	return c->clients;
+}
+
+selective_forward_t *
+vtysh_find_existing_selective_forward(selective_forward_command_t command)
+{
+	selective_forward_t *i;
+	frr_each (selective_forward_list, &vtysh_selective_forward_list, i)
+		if (command == i->command)
+			return i;
+	return NULL;
+}
+
+int vtysh_set_filter_daemon_command(int idx_client,
+				    selective_forward_command_t command)
+{
+	selective_forward_t *c = vtysh_find_existing_selective_forward(command);
+
+	if (!c) {
+		/* Make a new filter if one was not found */
+		c = XMALLOC(MTYPE_VTYSH_SELECTIVE, sizeof(selective_forward_t));
+		c->clients = 0;
+		c->command = command;
+		selective_forward_list_add_tail(&vtysh_selective_forward_list,
+						c);
+	}
+
+	/* Add this client to the bitmask */
+	c->clients |= vtysh_client[idx_client].flag;
+
+	return c->clients;
+}
+
+int vtysh_unset_filter_daemon_command(int idx_client,
+				      selective_forward_command_t command)
+{
+	selective_forward_t *c = vtysh_find_existing_selective_forward(command);
+
+	if (!c)
+		return VTYSH_ALL;
+
+	/* Remove this client from the bitmask */
+	c->clients &= !vtysh_client[idx_client].flag;
+
+	return c->clients;
+}
+
+void vtysh_clear_filter_daemon_command(selective_forward_command_t command)
+{
+	selective_forward_t *c;
+
+	c = vtysh_find_existing_selective_forward(command);
+
+	if (!c)
+		/* Nothing to free */
+		return;
+
+	/* Remove from list and free the item */
+	selective_forward_list_del(&vtysh_selective_forward_list, c);
+	XFREE(MTYPE_VTYSH_SELECTIVE, c);
+}
+
+DEFUN (vtysh_prefix_list_only_send_to,
+       vtysh_prefix_list_only_send_to_cmd,
+       "[no$no] ip prefix-list only-send-to {" DAEMONS_LIST "}",
+       NO_STR
+       IP_STR
+       PREFIX_LIST_STR
+       "only send to these daemons\n"
+       DAEMONS_STR)
+{
+	const bool no = !strcmp(argv[0]->arg, "no");
+	const char *daemon_name;
+	int remaining, i, res;
+	int idx_client;
+
+	// Skip to the daemon list
+	for (i = 0; i < argc && strcmp(argv[i]->arg, "only-send-to"); ++i)
+		;
+
+	while (++i < argc) {
+		daemon_name = argv[i]->arg;
+		idx_client = vtysh_client_lookup(daemon_name);
+		if (no) {
+			// Remove daemons from filter one-by-one
+
+			remaining = vtysh_unset_filter_daemon_command(
+				idx_client, SELECTIVE_FORWARD_PREFIX_LIST);
+			if (!remaining) {
+				// All daemons were unset
+				vtysh_clear_filter_daemon_command(
+					SELECTIVE_FORWARD_PREFIX_LIST);
+				return CMD_SUCCESS;
+			}
+		} else {
+			res = vtysh_set_filter_daemon_command(
+				idx_client, SELECTIVE_FORWARD_PREFIX_LIST);
+
+			if (res == -1) {
+				vty_out(vty, "Client not found\n");
+				return CMD_WARNING;
+			}
+		}
+	}
+	return CMD_SUCCESS;
+}
+
 DEFUN (vtysh_write_memory,
        vtysh_write_memory_cmd,
        "write [<memory|file>]",
@@ -4049,6 +4168,9 @@ void vtysh_init_vty(void)
 	cmd_init(0);
 	cmd_variable_handler_register(vtysh_var_handler);
 
+	/* Initialize selective-forwarding list (only-send-to) */
+	selective_forward_list_init(&vtysh_selective_forward_list);
+
 	/* bgpd */
 #ifdef HAVE_BGPD
 	install_node(&bgp_node);
@@ -4524,6 +4646,9 @@ void vtysh_init_vty(void)
 
 	install_element(CONFIG_NODE, &vtysh_integrated_config_cmd);
 	install_element(CONFIG_NODE, &no_vtysh_integrated_config_cmd);
+
+	/* prefix list */
+	install_element(ENABLE_NODE, &vtysh_prefix_list_only_send_to_cmd);
 
 	/* "write memory" command. */
 	install_element(ENABLE_NODE, &vtysh_write_memory_cmd);
