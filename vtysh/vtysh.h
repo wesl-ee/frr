@@ -119,6 +119,13 @@ vtysh_find_existing_selective_forward(selective_forward_command_t command);
 int vtysh_which_clients_want(selective_forward_command_t command);
 
 /*
+ * See if the given line is being filtered by idx_client and therefore should
+ * not be sent.
+ */
+bool vtysh_client_is_selectively_filtering(uint8_t idx_client,
+					   const char *line);
+
+/*
  * Add a client to the bitmask of clients that care about the command
  *
  * idx_client

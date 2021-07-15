@@ -184,6 +184,29 @@ static void vclient_close(struct vtysh_client *vclient)
 	}
 }
 
+bool vtysh_client_is_selectively_filtering(uint8_t idx_client, const char *line)
+{
+	const char *cmd;
+	selective_forward_command_t filter;
+	static const char *cmdstr[1] = {"ip prefix-list "};
+	static const selective_forward_command_t cmdfilter[1] = {
+		SELECTIVE_FORWARD_PREFIX_LIST};
+	assert(array_size(cmdstr) == array_size(cmdfilter));
+
+	for (size_t i = 0; i < array_size(cmdstr); ++i) {
+		cmd = cmdstr[i];
+		filter = cmdfilter[i];
+
+		if (!strncmp(line, cmd, strlen(cmd)))
+			if (!(idx_client & vtysh_which_clients_want(filter)))
+				/* Matching line AND is being filtered */
+				return true;
+	}
+
+	/* Line should be forwarded as normal */
+	return false;
+}
+
 /*
  * Send a CLI command to a client and read the response.
  *
@@ -224,6 +247,9 @@ static int vtysh_client_run(struct vtysh_client *vclient, const char *line,
 	}
 
 	if (vclient->fd < 0)
+		return CMD_SUCCESS;
+
+	if (vtysh_client_is_selectively_filtering(vclient->flag, line))
 		return CMD_SUCCESS;
 
 	ret = write(vclient->fd, line, strlen(line) + 1);
